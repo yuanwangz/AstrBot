@@ -5,6 +5,7 @@ import inspect
 import random
 import asyncio
 import astrbot.core.message.components as Comp
+from mimetypes import guess_type
 
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
@@ -517,14 +518,18 @@ class ProviderOpenAIOfficial(Provider):
                 "content": [{"type": "text", "text": text if text else "[图片]"}],
             }
             for image_url in image_urls:
+                # 确定实际的文件路径用于MIME类型检测
+                actual_file_path = image_url
                 if image_url.startswith("http"):
                     image_path = await download_image_by_url(image_url)
-                    image_data = await self.encode_image_bs64(image_path)
+                    actual_file_path = image_path
+                    image_data = await self.encode_image_bs64(image_path, actual_file_path)
                 elif image_url.startswith("file:///"):
                     image_path = image_url.replace("file:///", "")
-                    image_data = await self.encode_image_bs64(image_path)
+                    actual_file_path = image_path
+                    image_data = await self.encode_image_bs64(image_path, actual_file_path)
                 else:
-                    image_data = await self.encode_image_bs64(image_url)
+                    image_data = await self.encode_image_bs64(image_url, actual_file_path)
                 if not image_data:
                     logger.warning(f"图片 {image_url} 得到的结果为空，将忽略。")
                     continue
@@ -538,13 +543,45 @@ class ProviderOpenAIOfficial(Provider):
         else:
             return {"role": "user", "content": text}
 
-    async def encode_image_bs64(self, image_url: str) -> str:
+    async def encode_image_bs64(self, image_url: str, file_path: str = None) -> str:
         """
-        将图片转换为 base64
+        将文件转换为 base64，对图片类型固定使用image/jpeg，其他类型智能检测MIME
+
+        Args:
+            image_url: 图片URL或路径
+            file_path: 实际文件路径，用于MIME类型检测
         """
         if image_url.startswith("base64://"):
+            # 对于已经是base64的数据，检测MIME类型
+            if file_path:
+                mime_type, _ = guess_type(file_path)
+                if mime_type:
+                    # 如果是图片类型，固定使用image/jpeg
+                    if mime_type.startswith("image/"):
+                        return image_url.replace("base64://", "data:image/jpeg;base64,")
+                    else:
+                        # 非图片类型使用检测到的MIME类型
+                        return image_url.replace("base64://", f"data:{mime_type};base64,")
+            # 默认使用jpeg
             return image_url.replace("base64://", "data:image/jpeg;base64,")
-        with open(image_url, "rb") as f:
-            image_bs64 = base64.b64encode(f.read()).decode("utf-8")
-            return "data:image/jpeg;base64," + image_bs64
-        return ""
+
+        # 使用文件路径进行MIME类型检测
+        actual_path = file_path if file_path else image_url
+        mime_type, _ = guess_type(actual_path)
+
+        # 如果检测不到MIME类型，默认为图片
+        if not mime_type:
+            mime_type = "image/jpeg"
+        # 如果是图片类型，固定使用image/jpeg
+        elif mime_type.startswith("image/"):
+            mime_type = "image/jpeg"
+        # 其他类型保持检测到的MIME类型
+
+        try:
+            with open(image_url, "rb") as f:
+                file_content = f.read()
+                image_bs64 = base64.b64encode(file_content).decode("utf-8")
+                return f"data:{mime_type};base64,{image_bs64}"
+        except Exception as e:
+            logger.warning(f"读取文件 {image_url} 失败: {e}")
+            return ""
