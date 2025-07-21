@@ -5,6 +5,7 @@ import logging
 import random
 from typing import Optional
 from collections.abc import AsyncGenerator
+from mimetypes import guess_type
 
 from google import genai
 from google.genai import types
@@ -648,14 +649,30 @@ class ProviderGoogleGenAI(Provider):
 
     async def encode_image_bs64(self, image_url: str) -> str:
         """
-        将图片转换为 base64
+        将文件转换为 base64，对图片类型固定使用image/jpeg，其他类型智能检测MIME
         """
         if image_url.startswith("base64://"):
             return image_url.replace("base64://", "data:image/jpeg;base64,")
-        with open(image_url, "rb") as f:
-            image_bs64 = base64.b64encode(f.read()).decode("utf-8")
-            return "data:image/jpeg;base64," + image_bs64
-        return ""
+
+        # 使用文件路径进行MIME类型检测
+        mime_type, _ = guess_type(image_url)
+
+        # 如果检测不到MIME类型，默认为图片
+        if not mime_type:
+            mime_type = "image/jpeg"
+        # 如果是图片类型，固定使用image/jpeg
+        elif mime_type.startswith("image/"):
+            mime_type = "image/jpeg"
+        # 其他类型保持检测到的MIME类型
+
+        try:
+            with open(image_url, "rb") as f:
+                file_content = f.read()
+                image_bs64 = base64.b64encode(file_content).decode("utf-8")
+                return f"data:{mime_type};base64,{image_bs64}"
+        except Exception as e:
+            logger.warning(f"读取文件 {image_url} 失败: {e}")
+            return ""
 
     async def terminate(self):
         logger.info("Google GenAI 适配器已终止。")
